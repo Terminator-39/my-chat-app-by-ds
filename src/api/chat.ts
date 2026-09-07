@@ -1,7 +1,7 @@
 /*
  * @Author: wlong
  * @Date: 2026-09-07 18:44:22
- * @LastEditTime: 2026-09-07 20:45:48
+ * @LastEditTime: 2026-09-07 21:17:24
  * @LastEditors: wlong
  * @Description: 
  * @FilePath: /Demo_26_07/Demo_Front/my-chat-app/src/api/chat.ts
@@ -13,10 +13,6 @@ export interface ChatRequest {
   session_id: string
   stream?: boolean
 }
-type StreamReq = [{
-  role: string
-  content: string
-}]
 
 export interface ChatResponse {
   session_id: string
