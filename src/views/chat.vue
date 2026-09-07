@@ -1,0 +1,679 @@
+<script setup lang="ts">
+import { nextTick, ref } from 'vue'
+import { ElMessage } from 'element-plus'
+import { startChatStream } from '../api/chat'
+
+interface Message {
+  role: 'user' | 'assistant'
+  content: string
+  time: string
+}
+
+const suggestions = [
+  '帮我写一份产品需求文档',
+  '把这段话翻译成英文',
+  '分析一下我的工作计划',
+]
+const messages = ref<Message[]>([])
+const input = ref('')
+const loading = ref(false)
+// 是否在等待模型输出首个字符：为 true 时显示"正在思考"动画，首字到达后隐藏
+const typing = ref(false)
+const conversation = ref('新的对话')
+const sessionId = ref(crypto.randomUUID())
+const messageList = ref<HTMLElement>()
+
+const now = () =>
+  new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date())
+async function scrollToBottom() {
+  await nextTick()
+  if (messageList.value)
+    messageList.value.scrollTop = messageList.value.scrollHeight
+}
+
+async function sendMessage(content = input.value) {
+  const text = content.trim()
+  if (!text || loading.value) return
+  messages.value.push({ role: 'user', content: text, time: now() })
+  input.value = ''
+  if (conversation.value === '新的对话') conversation.value = text.slice(0, 22)
+  loading.value = true
+  typing.value = true
+  await scrollToBottom()
+  try {
+    // todo ----- stream ⬇
+    // 将整段对话历史发给模型（含刚 push 的这条用户消息），实现多轮上下文
+    const payload = messages.value.map(({ role, content }) => ({ role, content }))
+    const res = await startChatStream(payload)
+    if (!res.ok) throw new Error(`请求失败（${res.status}）`)
+    if (!res.body) return
+    // 占位一条 assistant 消息，只 push 一次，不能放进循环
+    messages.value.push({ role: 'assistant', content: '', time: now() })
+    await scrollToBottom()
+    // 获取流读取器
+    const reader = res.body.getReader()
+    // stream: true 跨 chunk 保留被截断的多字节字符（中文 3 字节），避免乱码
+    const decoder = new TextDecoder('utf-8')
+    let buffer = '' // 累积未消费文本，防止 SSE 事件被网络 chunk 切断导致内容丢失
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      // deepseek SSE 事件以 \n\n 分隔：data: {...}\n\n，只处理完整事件，剩余留到下一轮
+      const events = buffer.split('\n\n')
+      buffer = events.pop() ?? ''
+      for (const event of events) {
+        for (const line of event.split('\n')) {
+          const trimLine = line.trim()
+          if (!trimLine.startsWith('data:')) continue
+          const jsonStr = trimLine.replace(/^data:\s*/, '')
+          if (jsonStr === '[DONE]') continue
+          try {
+            const jsonObj = JSON.parse(jsonStr)
+            const delta = jsonObj.choices?.[0]?.delta?.content
+            if (delta) {
+              // 首个字到达后隐藏"正在思考"动画，避免与输出内容重叠
+              typing.value = false
+              // 通过 messages.value 的响应式代理更新最后一条 assistant 消息，触发视图更新
+              messages.value[messages.value.length - 1].content += delta
+            }
+          } catch {
+            // 有 buffer 兜底后理论上不会再有半截 JSON，保留兜底以防异常
+          }
+        }
+      }
+    }
+    // input.value = ''
+
+    // todo ----- stream ⬆
+    // const response = await startChat({
+    //   prompt: text,
+    //   session_id: sessionId.value,
+    //   stream: false,
+    // })
+    // sessionId.value = response.session_id
+    // messages.value.push({
+    //   role: 'assistant',
+    //   content: response.text,
+    //   time: now(),
+    // })
+  } catch (error) {
+    typing.value = false
+    ElMessage.error(
+      error instanceof Error ? error.message : '连接服务失败，请稍后再试',
+    )
+    messages.value.push({
+      role: 'assistant',
+      content: '抱歉，我暂时无法连接服务。请检查后端是否已启动。',
+      time: now(),
+    })
+  } finally {
+    loading.value = false
+    typing.value = false
+    await scrollToBottom()
+  }
+}
+
+function resetChat() {
+  messages.value = []
+  input.value = ''
+  conversation.value = '新的对话'
+  sessionId.value = crypto.randomUUID()
+}
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault()
+    sendMessage()
+  }
+}
+</script>
+
+<template>
+  <main class="chat-page">
+    <aside class="chat-sidebar">
+      <div class="brand">
+        <span class="brand-mark">✦</span><span>Neura</span>
+      </div>
+      <button class="new-chat" type="button" @click="resetChat">
+        <span>＋</span> 新建对话
+      </button>
+      <div class="sidebar-section-label">最近对话</div>
+      <button class="history-item active" type="button">
+        <span class="history-dot">◌</span><span>{{ conversation }}</span>
+      </button>
+      <div class="sidebar-footer">
+        <div class="profile-avatar">W</div>
+        <div><strong>欢迎回来</strong><small>个人空间</small></div>
+        <span class="more">···</span>
+      </div>
+    </aside>
+    <section class="chat-shell">
+      <header class="chat-header">
+        <div>
+          <div class="eyebrow">AI CONVERSATION</div>
+          <h1>{{ conversation }}</h1>
+        </div>
+        <div class="header-actions">
+          <span class="model-pill"><i></i> DeepSeek</span
+          ><button class="icon-button" type="button" aria-label="更多操作">
+            •••
+          </button>
+        </div>
+      </header>
+      <div ref="messageList" class="message-list">
+        <div v-if="!messages.length" class="empty-state">
+          <div class="welcome-orb"><span>✦</span></div>
+          <div class="welcome-kicker">GOOD TO SEE YOU</div>
+          <h2>今天想和我聊点什么？</h2>
+          <p>我可以帮你思考、创作、分析，把每个想法变成清晰的下一步。</p>
+          <div class="suggestions">
+            <button
+              v-for="suggestion in suggestions"
+              :key="suggestion"
+              type="button"
+              @click="sendMessage(suggestion)"
+            >
+              {{ suggestion }} <span>↗</span>
+            </button>
+          </div>
+        </div>
+        <div v-else class="conversation">
+          <div
+            v-for="(message, index) in messages"
+            :key="`${message.time}-${index}`"
+            class="message-row"
+            :class="message.role"
+          >
+            <div v-if="message.role === 'assistant'" class="message-avatar">
+              ✦
+            </div>
+            <div class="message-content">
+              <div class="message-meta">
+                {{ message.role === 'assistant' ? 'Neura' : '你' }} ·
+                {{ message.time }}
+              </div>
+              <div class="message-bubble">{{ message.content }}</div>
+            </div>
+            <div v-if="message.role === 'user'" class="user-avatar">W</div>
+          </div>
+          <div v-if="typing" class="message-row assistant">
+            <div class="message-avatar">✦</div>
+            <div class="message-content">
+              <div class="message-meta">Neura · 正在思考</div>
+              <div class="message-bubble typing">
+                <span></span><span></span><span></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <footer class="composer-wrap">
+        <div class="composer">
+          <textarea
+            v-model="input"
+            rows="1"
+            placeholder="输入你的问题，按 Enter 发送"
+            @keydown="handleKeydown"
+          ></textarea>
+          <div class="composer-tools">
+            <span>Shift + Enter 换行</span>
+            <button
+              class="send-button"
+              type="button"
+              :disabled="loading || !input.trim()"
+              aria-label="发送"
+              @click="sendMessage()"
+            >
+              ↑
+            </button>
+          </div>
+        </div>
+        <p class="disclaimer">
+          Neura 可能会产生错误信息，请对重要内容进行核实。
+        </p>
+      </footer>
+    </section>
+  </main>
+</template>
+
+<style scoped>
+:global(#app) {
+  height: 100svh;
+  min-height: 0;
+  overflow: hidden;
+}
+.chat-page {
+  --ink: #f8f7ff;
+  --muted: #9490a8;
+  --line: rgba(255, 255, 255, 0.09);
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  color: var(--ink);
+  background: #0b0b13;
+}
+.chat-sidebar {
+  display: flex;
+  width: 248px;
+  flex: 0 0 248px;
+  flex-direction: column;
+  padding: 30px 18px 20px;
+  box-sizing: border-box;
+  border-right: 1px solid var(--line);
+  background: rgba(18, 17, 30, 0.76);
+}
+.brand {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 0 12px 42px;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+.brand-mark {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 10px;
+  color: #16111f;
+  background: linear-gradient(135deg, #d5b4ff, #8b65f5);
+  box-shadow: 0 0 22px rgba(161, 112, 255, 0.5);
+}
+.new-chat,
+.history-item {
+  border: 1px solid var(--line);
+  color: #eeebf8;
+  background: transparent;
+}
+.new-chat {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 11px;
+  font: inherit;
+  cursor: pointer;
+}
+.new-chat span {
+  color: #b694ff;
+  font-size: 19px;
+}
+.sidebar-section-label {
+  margin: 34px 12px 10px;
+  color: #69657b;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+}
+.history-item {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  overflow: hidden;
+  width: 100%;
+  padding: 11px 12px;
+  border-color: transparent;
+  border-radius: 10px;
+  color: #b5b0c8;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.history-item.active {
+  color: #f4efff;
+  background: rgba(159, 121, 241, 0.14);
+}
+.history-dot {
+  color: #a378f4;
+}
+.sidebar-footer {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: auto;
+  padding: 16px 10px 0;
+  border-top: 1px solid var(--line);
+  color: #ddd8e8;
+  font-size: 12px;
+}
+.profile-avatar,
+.user-avatar {
+  display: grid;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 10px;
+  color: #1a1426;
+  font-size: 12px;
+  font-weight: 700;
+  background: #c3a5f7;
+}
+.sidebar-footer small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.more {
+  margin-left: auto;
+  color: #777289;
+  letter-spacing: 2px;
+}
+.chat-shell {
+  display: flex;
+  width: min(100%, 1060px);
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  margin: 0 auto;
+  overflow: hidden;
+  background: radial-gradient(
+    circle at 50% -15%,
+    rgba(93, 62, 156, 0.2),
+    transparent 42%
+  );
+}
+.chat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 27px clamp(24px, 5vw, 70px) 23px;
+  border-bottom: 1px solid var(--line);
+}
+.eyebrow,
+.welcome-kicker {
+  color: #8973bf;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 2px;
+}
+.chat-header h1 {
+  margin: 5px 0 0;
+  color: #f4f0fc;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.header-actions {
+  display: flex;
+  gap: 15px;
+  align-items: center;
+}
+.model-pill {
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  color: #b7aecb;
+  font-size: 11px;
+}
+.model-pill i {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #7ee0a7;
+  box-shadow: 0 0 9px #7ee0a7;
+}
+.icon-button {
+  border: 0;
+  color: #8b849c;
+  background: transparent;
+  letter-spacing: 2px;
+  cursor: pointer;
+}
+.message-list {
+  overflow: auto;
+  width: min(100%, 820px);
+  min-height: 0;
+  flex: 1;
+  margin: 0 auto;
+  padding: 28px 24px;
+  box-sizing: border-box;
+}
+.empty-state {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding-bottom: 8vh;
+  text-align: center;
+}
+.welcome-orb {
+  display: grid;
+  width: 66px;
+  height: 66px;
+  place-items: center;
+  margin-bottom: 22px;
+  border: 1px solid rgba(205, 178, 255, 0.35);
+  border-radius: 22px;
+  color: #e7d9ff;
+  font-size: 28px;
+  background: linear-gradient(
+    135deg,
+    rgba(209, 174, 255, 0.25),
+    rgba(104, 76, 176, 0.18)
+  );
+  box-shadow: 0 0 60px rgba(142, 98, 228, 0.28);
+}
+.empty-state h2 {
+  margin: 12px 0 8px;
+  color: #f6f2ff;
+  font-size: clamp(25px, 4vw, 34px);
+  font-weight: 500;
+  letter-spacing: -1px;
+}
+.empty-state p {
+  max-width: 430px;
+  color: #918b9f;
+  font-size: 13px;
+}
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 9px;
+  margin-top: 28px;
+}
+.suggestions button {
+  padding: 10px 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: #bbb3ca;
+  font: inherit;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  transition:
+    border-color 0.2s,
+    background 0.2s;
+}
+.suggestions button:hover {
+  border-color: #8f70ce;
+  background: rgba(159, 121, 241, 0.12);
+}
+.suggestions span {
+  margin-left: 7px;
+  color: #a17de7;
+}
+.conversation {
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  padding-bottom: 25px;
+}
+.message-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.message-row.user {
+  justify-content: flex-end;
+}
+.message-content {
+  max-width: min(76%, 620px);
+}
+.message-meta {
+  margin: 2px 0 7px;
+  color: #777187;
+  font-size: 10px;
+}
+.message-row.user .message-meta {
+  text-align: right;
+}
+.message-bubble {
+  padding: 13px 16px;
+  border: 1px solid var(--line);
+  border-radius: 4px 15px 15px;
+  color: #d9d4e2;
+  font-size: 13px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  background: rgba(255, 255, 255, 0.045);
+}
+.message-row.user .message-bubble {
+  border: 0;
+  border-radius: 15px 4px 15px 15px;
+  color: #21172e;
+  background: linear-gradient(135deg, #d1b7fa, #a886eb);
+}
+.message-avatar {
+  display: grid;
+  flex: 0 0 auto;
+  width: 29px;
+  height: 29px;
+  place-items: center;
+  border: 1px solid rgba(179, 139, 249, 0.35);
+  border-radius: 10px;
+  color: #d1b9fb;
+  font-size: 13px;
+  background: rgba(150, 111, 232, 0.15);
+}
+.typing {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  height: 44px;
+  box-sizing: border-box;
+}
+.typing span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #9f80df;
+  animation: pulse 1.2s infinite ease-in-out;
+}
+.typing span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes pulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.composer-wrap {
+  width: min(100%, 820px);
+  padding: 0 24px 23px;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+.composer {
+  padding: 10px 11px 10px 17px;
+  border: 1px solid rgba(178, 145, 242, 0.3);
+  border-radius: 16px;
+  background: rgba(28, 24, 43, 0.85);
+  box-shadow:
+    0 12px 45px rgba(0, 0, 0, 0.25),
+    inset 0 1px rgba(255, 255, 255, 0.05);
+}
+.composer textarea {
+  display: block;
+  overflow: auto;
+  width: 100%;
+  min-height: 26px;
+  max-height: 110px;
+  padding: 2px 0;
+  border: 0;
+  outline: 0;
+  resize: none;
+  color: #f2edf8;
+  font: inherit;
+  font-size: 13px;
+  background: transparent;
+}
+.composer textarea::placeholder {
+  color: #777188;
+}
+.composer-tools {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 13px;
+  color: #696378;
+  font-size: 10px;
+}
+.send-button {
+  display: grid;
+  width: 29px;
+  height: 29px;
+  place-items: center;
+  border: 0;
+  border-radius: 9px;
+  color: #241831;
+  font-size: 20px;
+  background: #c2a3f4;
+  cursor: pointer;
+}
+.send-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+.disclaimer {
+  margin-top: 10px;
+  color: #5f5a6d;
+  text-align: center;
+  font-size: 10px;
+}
+@media (max-width: 700px) {
+  .chat-sidebar {
+    display: none;
+  }
+  .chat-header {
+    padding-inline: 20px;
+  }
+  .header-actions .model-pill {
+    display: none;
+  }
+  .message-list,
+  .composer-wrap {
+    padding-inline: 16px;
+  }
+  .message-content {
+    max-width: 84%;
+  }
+  .suggestions button {
+    width: 100%;
+  }
+}
+</style>
