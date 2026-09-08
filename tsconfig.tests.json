@@ -1,0 +1,19 @@
+{ // TypeScript 配置文件 (tsconfig.json)// 定义了 TypeScript 项目的编译选项和文件包含规则
+  "include": ["tests/**/*.ts"], // 包含规则：包含 tests 目录下所有 .ts 文件
+  "exclude": ["tests/setup.ts"], // 排除规则：排除 tests/setup.ts 文件
+  "compilerOptions": { // 编译器选项配置
+    "target": "ES2022", // 目标 ECMAScript 版本设置为 ES2022
+    "module": "ESNext", // 模块系统设置为 ESNext
+    "moduleResolution": "Bundler", // 模块解析策略设置为 Bundler
+    "allowImportingTsExtensions": true, // 允许导入 TypeScript 扩展名
+    "resolveJsonModule": true, // 允许导入 JSON 模块
+    "isolatedModules": true, // 启用隔离模块，确保每个文件都是可独立编译的
+    "esModuleInterop": true, // 启用 ES 模块互操作性，允许 CommonJS 模块与 ES 模块互操作
+    "strict": true, // 启用严格模式，检查类型错误和潜在问题
+    "noUnusedLocals": true, // 检查是否有未使用的局部变量
+    "noUnusedParameters": true, // 在 unused parameters 报错
+    "lib": ["ES2022", "DOM", "DOM.Iterable"], // 指定要包含在编译中的库文件
+    "noEmit": true, // 不生成输出文件，仅用于类型检查
+    "skipLibCheck": true // 跳过所有声明文件的类型检查，提高编译速度
+  }
+}
