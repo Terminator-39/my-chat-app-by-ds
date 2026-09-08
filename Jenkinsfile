@@ -34,12 +34,12 @@ pipeline {
         stage('安装依赖 & 类型检查') {
             steps {
                 sh '''
-                    /usr/local/bin/node node -v
-                    npm -v
+                    /usr/local/bin/node -v
+                    /usr/local/bin/npm -v
                     # npm ci 根据 package-lock.json 严格安装依赖，保证 CI 与本地版本一致
-                    npm ci
-                    npm run type-check
-                    npm run type-check:tests
+                    /usr/local/bin/npm ci
+                    /usr/local/bin/npm run type-check
+                    /usr/local/bin/npm run type-check:tests
                 '''
             }
         }
