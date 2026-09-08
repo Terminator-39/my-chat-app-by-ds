@@ -1,12 +1,15 @@
 pipeline {
     agent any
+    environment {
+        PATH = "/usr/local/bin:${env.PATH}"
+    }
 
     stages {
-        stage('检出代码') {
-            steps {
-                checkout scm
-            }
-        }
+        // stage('检出代码') {
+        //     steps {
+        //         checkout scm
+        //     }
+        // }
 
         // GIT_COMMIT/BUILD_ENV 依赖 checkout 之后才存在，所以在检出后统一设置
         stage('设置环境变量') {
@@ -33,7 +36,6 @@ pipeline {
         stage('安装依赖 & 代码检查') {
             steps {
                 sh '''
-                    export PATH="/usr/local/bin:$PATH"
                     node -v
                     npm -v
                     npm ci
