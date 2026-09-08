@@ -113,7 +113,10 @@ pipeline {
         }
         success {
             echo '✅ 流水线执行成功'
+            // 把dist归档保存到Jenkins，网页可以下载
+            archiveArtifacts artifacts: 'dist/**', fingerprint: true
         }
+    }
         failure {
             echo '❌ 流水线执行失败，请查看日志排查问题'
         // 这里可以配置企业微信/邮件通知
