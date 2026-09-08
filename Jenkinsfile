@@ -24,7 +24,7 @@ pipeline {
                     def branch = env.BRANCH_NAME
                         ?: env.GIT_BRANCH?.replace('origin/', '')
                         ?: 'develop'
-                    env.BUILD_ENV = (branch == 'main') ? 'prod' : 'dev'
+                    env.BUILD_ENV = (branch == 'master') ? 'prod' : 'dev'
                     echo "当前分支：${branch}，构建环境：${env.BUILD_ENV}"
                 }
             }
@@ -34,7 +34,7 @@ pipeline {
         stage('安装依赖 & 类型检查') {
             steps {
                 sh '''
-                    node -v
+                    /usr/local/bin/node node -v
                     npm -v
                     # npm ci 根据 package-lock.json 严格安装依赖，保证 CI 与本地版本一致
                     npm ci
