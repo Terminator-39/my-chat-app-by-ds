@@ -109,7 +109,7 @@ pipeline {
     post {
         always {
             echo "流水线结束，commit: ${env.GIT_COMMIT_SHA ?: 'N/A'}, env: ${env.BUILD_ENV ?: 'N/A'}"
-            cleanWs() // 清理工作空间，防止磁盘占用过高（需要 Workspace Cleanup 插件）
+            // cleanWs() // 清理工作空间，防止磁盘占用过高（需要 Workspace Cleanup 插件）
         }
         success {
             echo '✅ 流水线执行成功'
