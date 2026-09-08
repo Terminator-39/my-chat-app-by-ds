@@ -109,14 +109,13 @@ pipeline {
     post {
         always {
             echo "流水线结束，commit: ${env.GIT_COMMIT_SHA ?: 'N/A'}, env: ${env.BUILD_ENV ?: 'N/A'}"
-            // cleanWs() // 清理工作空间，防止磁盘占用过高（需要 Workspace Cleanup 插件）
+        // cleanWs() // 清理工作空间，防止磁盘占用过高（需要 Workspace Cleanup 插件）
         }
         success {
             echo '✅ 流水线执行成功'
             // 把dist归档保存到Jenkins，网页可以下载
             archiveArtifacts artifacts: 'dist/**', fingerprint: true
         }
-    }
         failure {
             echo '❌ 流水线执行失败，请查看日志排查问题'
         // 这里可以配置企业微信/邮件通知
