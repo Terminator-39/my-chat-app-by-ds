@@ -30,8 +30,7 @@ pipeline {
             }
         }
 
-        // 注意：本项目 package.json 没有 lint 脚本（eslint 未配置），这里只做依赖安装与类型检查
-        stage('安装依赖 & 类型检查') {
+        stage('安装依赖 & 代码检查') {
             steps {
                 sh '''
                     export PATH="/usr/local/bin:$PATH"
