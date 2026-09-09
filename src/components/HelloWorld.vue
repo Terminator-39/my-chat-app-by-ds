@@ -1,9 +1,18 @@
+<!--
+ * @Author: wlong
+ * @Date: 2026-09-07 17:59:07
+ * @LastEditTime: 2026-09-09 13:33:23
+ * @LastEditors: wlong
+ * @Description: 
+ * @FilePath: /Demo_26_07/Demo_Front/my-chat-app/src/components/HelloWorld.vue
+-->
 <script setup lang="ts">
 import { ref } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { login } from '../api/user'
+import { useUserStore } from '../store'
 
 interface LoginForm {
   username: string
@@ -11,6 +20,7 @@ interface LoginForm {
 }
 
 const router = useRouter()
+const userStore = useUserStore()
 const formRef = ref<FormInstance>()
 const loading = ref(false)
 const form = ref<LoginForm>({ username: '', password: '' })
@@ -30,10 +40,15 @@ async function submit() {
 
   loading.value = true
   try {
-    const token = await login(form.value)
-    localStorage.setItem('access_token', token)
-    ElMessage.success('登录成功，欢迎回来')
-    await router.push({ name: 'chat' })
+    const res = await login(form.value)
+    if(res.code == 200){
+      // const {token,sessionId} = res.data
+      localStorage.setItem('access_token', res?.data?.token || '')
+      localStorage.setItem('sessionId', res?.data?.userInfo?.sessionId || '')
+      userStore.setUserInfo({ username: form.value.username, token: res?.data?.token || '', sessionId: res?.data?.userInfo?.sessionId || '' })
+      ElMessage.success('登录成功，欢迎回来')
+      await router.push({ name: 'chat' })
+    }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '登录失败，请稍后重试')
   } finally {

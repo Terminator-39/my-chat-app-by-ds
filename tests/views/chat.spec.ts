@@ -1,4 +1,5 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Chat from '../../src/views/chat.vue'
 
@@ -67,6 +68,8 @@ async function sendByEnter(wrapper: VueWrapper, text: string) {
 describe('Chat 视图', () => {
   beforeEach(() => {
     startChatStreamMock.mockReset()
+    // chat.vue 内 useUserStore() 依赖一个激活的 pinia 实例
+    setActivePinia(createPinia())
   })
 
   it('空白输入不发起请求', async () => {
@@ -104,7 +107,7 @@ describe('Chat 视图', () => {
     expect(wrapper.find('.send-button').attributes('disabled')).toBeUndefined()
   })
 
-  it('多轮对话会把整段历史作为请求上下文', async () => {
+  it('多轮对话时每次只把最新一条用户消息作为请求体', async () => {
     startChatStreamMock
       .mockResolvedValueOnce(buildSseResponse([event('你好'), doneEvent]))
       .mockResolvedValueOnce(buildSseResponse([event('再见'), doneEvent]))
@@ -113,9 +116,10 @@ describe('Chat 视图', () => {
     await sendByEnter(wrapper, '再来一个')
 
     expect(startChatStreamMock).toHaveBeenCalledTimes(2)
-    expect(startChatStreamMock.mock.calls[1][0]).toEqual([
+    expect(startChatStreamMock.mock.calls[0][0]).toEqual([
       { role: 'user', content: 'hi' },
-      { role: 'assistant', content: '你好' },
+    ])
+    expect(startChatStreamMock.mock.calls[1][0]).toEqual([
       { role: 'user', content: '再来一个' },
     ])
   })

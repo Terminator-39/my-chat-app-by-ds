@@ -2,11 +2,14 @@
 import { nextTick, onBeforeUnmount, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { startChatStream } from '../api/chat'
+import { useUserStore } from '../store'
+const userStore = useUserStore()
 
 interface Message {
   role: 'user' | 'assistant'
   content: string
   time: string
+  sessionId?: string
 }
 
 const suggestions = [
@@ -20,7 +23,6 @@ const loading = ref(false)
 // 是否在等待模型输出首个字符：为 true 时显示"正在思考"动画，首字到达后隐藏
 const typing = ref(false)
 const conversation = ref('新的对话')
-const sessionId = ref(crypto.randomUUID())
 const messageList = ref<HTMLElement>()
 const abortController = ref<AbortController | null>(null)
 let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null
@@ -39,7 +41,10 @@ async function scrollToBottom() {
 async function sendMessage(content = input.value) {
   const text = content.trim()
   if (!text || loading.value) return
-  messages.value.push({ role: 'user', content: text, time: now() })
+  const sessionId = userStore.userInfo?.sessionId || ''
+  // 本地列表用完整消息（含展示字段 time/sessionId）
+  const message: Message = { role: 'user', content: text, time: now(), sessionId }
+  messages.value.push(message)
   input.value = ''
   if (conversation.value === '新的对话') conversation.value = text.slice(0, 22)
   loading.value = true
@@ -49,13 +54,13 @@ async function sendMessage(content = input.value) {
   abortController.value = controller
   try {
     // todo ----- stream ⬇
-    // 将整段对话历史发给模型（含刚 push 的这条用户消息），实现多轮上下文
-    const payload = messages.value.map(({ role, content }) => ({ role, content }))
+    // 只把最新这条用户消息发给模型，body 仅含 role/content；历史会话由服务端自行维护
+    const payload = [{ role: message.role, content: message.content,sessionId }]
     const res = await startChatStream(payload, controller.signal)
     if (!res.ok) throw new Error(`请求失败（${res.status}）`)
     if (!res.body) return
     // 占位一条 assistant 消息，只 push 一次，不能放进循环
-    messages.value.push({ role: 'assistant', content: '', time: now() })
+    messages.value.push({ role: 'assistant', content: '', time: now(), sessionId })
     await scrollToBottom()
     // 获取流读取器
     const reader = res.body.getReader()
@@ -120,6 +125,7 @@ async function sendMessage(content = input.value) {
       role: 'assistant',
       content: '抱歉，我暂时无法连接服务。请检查后端是否已启动。',
       time: now(),
+      sessionId,
     })
   } finally {
     currentReader = null
@@ -143,7 +149,6 @@ function resetChat() {
   messages.value = []
   input.value = ''
   conversation.value = '新的对话'
-  sessionId.value = crypto.randomUUID()
 }
 
 onBeforeUnmount(() => {

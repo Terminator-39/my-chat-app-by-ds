@@ -9,25 +9,31 @@ describe('login', () => {
     getMock.mockReset()
   })
 
-  it('从 data.access_token 中提取 token 并返回', async () => {
+  it('登录成功返回完整响应，并按 userInfo.id 注入 sessionId', async () => {
     getMock.mockResolvedValue({
-      data: { code: 200, data: { access_token: 'tok-1' } },
+      data: {
+        code: 200,
+        data: { token: 'tok-1', userInfo: { id: 7, username: 'u' } },
+      },
     })
-    await expect(login({ username: 'u', password: 'p' })).resolves.toBe(
-      'tok-1',
-    )
+    await expect(login({ username: 'u', password: 'p' })).resolves.toEqual({
+      code: 200,
+      data: {
+        token: 'tok-1',
+        userInfo: { id: 7, username: 'u', sessionId: 'sessionId_7' },
+      },
+    })
     expect(getMock).toHaveBeenCalledWith('/api/user/login', {
       params: { username: 'u', password: 'p' },
     })
   })
 
-  it('兼容 data.token 的返回结构', async () => {
-    getMock.mockResolvedValue({
-      data: { code: 200, data: { token: 'tok-2' } },
+  it('响应缺少 userInfo 时兜底创建并注入 sessionId', async () => {
+    getMock.mockResolvedValue({ data: { code: 200, data: { token: 'tok-2' } } })
+    await expect(login({ username: 'u', password: 'p' })).resolves.toEqual({
+      code: 200,
+      data: { token: 'tok-2', userInfo: { sessionId: 'sessionId_undefined' } },
     })
-    await expect(login({ username: 'u', password: 'p' })).resolves.toBe(
-      'tok-2',
-    )
   })
 
   it('业务失败（code!==200）时抛出后端 message', async () => {
