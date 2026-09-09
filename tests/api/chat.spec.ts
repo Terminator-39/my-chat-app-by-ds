@@ -46,7 +46,18 @@ describe('startChatStream（流式）', () => {
     expect(url).toBe('/api/chat/deepseek/stream_chat')
     expect(init.method).toBe('POST')
     expect(init.headers).toEqual({ 'Content-Type': 'application/json' })
+    expect(init.signal).toBeUndefined()
     expect(JSON.parse(init.body as string)).toEqual(payload)
     expect(res).toBe(fakeRes)
+  })
+
+  it('将 AbortSignal 传给 fetch', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true })
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+
+    await startChatStream([{ role: 'user', content: 'hi' }], controller.signal)
+
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal)
   })
 })

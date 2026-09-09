@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
+import { nextTick, onBeforeUnmount, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { startChatStream } from '../api/chat'
 
@@ -22,6 +22,8 @@ const typing = ref(false)
 const conversation = ref('新的对话')
 const sessionId = ref(crypto.randomUUID())
 const messageList = ref<HTMLElement>()
+const abortController = ref<AbortController | null>(null)
+let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null
 
 const now = () =>
   new Intl.DateTimeFormat('zh-CN', {
@@ -43,11 +45,13 @@ async function sendMessage(content = input.value) {
   loading.value = true
   typing.value = true
   await scrollToBottom()
+  const controller = new AbortController()
+  abortController.value = controller
   try {
     // todo ----- stream ⬇
     // 将整段对话历史发给模型（含刚 push 的这条用户消息），实现多轮上下文
     const payload = messages.value.map(({ role, content }) => ({ role, content }))
-    const res = await startChatStream(payload)
+    const res = await startChatStream(payload, controller.signal)
     if (!res.ok) throw new Error(`请求失败（${res.status}）`)
     if (!res.body) return
     // 占位一条 assistant 消息，只 push 一次，不能放进循环
@@ -55,6 +59,7 @@ async function sendMessage(content = input.value) {
     await scrollToBottom()
     // 获取流读取器
     const reader = res.body.getReader()
+    currentReader = reader
     // stream: true 跨 chunk 保留被截断的多字节字符（中文 3 字节），避免乱码
     const decoder = new TextDecoder('utf-8')
     let buffer = '' // 累积未消费文本，防止 SSE 事件被网络 chunk 切断导致内容丢失
@@ -102,6 +107,12 @@ async function sendMessage(content = input.value) {
     // })
   } catch (error) {
     typing.value = false
+    if (
+      controller.signal.aborted ||
+      (error instanceof DOMException && error.name === 'AbortError')
+    ) {
+      return
+    }
     ElMessage.error(
       error instanceof Error ? error.message : '连接服务失败，请稍后再试',
     )
@@ -111,18 +122,33 @@ async function sendMessage(content = input.value) {
       time: now(),
     })
   } finally {
+    currentReader = null
+    if (abortController.value === controller) abortController.value = null
     loading.value = false
     typing.value = false
     await scrollToBottom()
   }
 }
 
+async function stopGeneration() {
+  abortController.value?.abort()
+  if (currentReader) {
+    await currentReader.cancel()
+    currentReader = null
+  }
+}
+
 function resetChat() {
+  void stopGeneration()
   messages.value = []
   input.value = ''
   conversation.value = '新的对话'
   sessionId.value = crypto.randomUUID()
 }
+
+onBeforeUnmount(() => {
+  void stopGeneration()
+})
 function handleKeydown(event: KeyboardEvent) {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
@@ -221,6 +247,16 @@ function handleKeydown(event: KeyboardEvent) {
           <div class="composer-tools">
             <span>Shift + Enter 换行</span>
             <button
+              v-if="loading"
+              class="send-button stop-button"
+              type="button"
+              aria-label="停止生成"
+              @click="stopGeneration"
+            >
+              ■
+            </button>
+            <button
+              v-else
               class="send-button"
               type="button"
               :disabled="loading || !input.trim()"

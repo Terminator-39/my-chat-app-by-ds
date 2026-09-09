@@ -90,7 +90,7 @@ describe('Chat 视图', () => {
     expect(assistantRows).toHaveLength(1)
     expect(assistantRows[0].find('.message-bubble').text()).toBe('你好')
     // 请求体：首轮只有当前这条用户消息
-    expect(startChatStreamMock).toHaveBeenCalledWith([
+    expect(startChatStreamMock.mock.calls[0][0]).toEqual([
       { role: 'user', content: 'hi' },
     ])
     // 输入已清空、"正在思考"动画消失
@@ -143,6 +143,31 @@ describe('Chat 视图', () => {
     expect(
       wrapper.find('.message-row.assistant .message-bubble').text(),
     ).toBe('早')
+  })
+
+  it('点击停止按钮会取消请求和流读取，并保留已收到的内容', async () => {
+    const { response, emit } = buildPendingStream()
+    startChatStreamMock.mockResolvedValue(response)
+    const wrapper = mount(Chat)
+
+    await wrapper.find('textarea').setValue('hi')
+    await wrapper.find('textarea').trigger('keydown', { key: 'Enter' })
+    await flushAll()
+    emit(event('已收到'))
+    await flushAll()
+
+    expect(wrapper.find('.stop-button').exists()).toBe(true)
+    await wrapper.find('.stop-button').trigger('click')
+    await flushAll()
+
+    expect(startChatStreamMock.mock.calls[0][1].aborted).toBe(true)
+    expect(wrapper.find('.stop-button').exists()).toBe(false)
+    expect(wrapper.find('.message-row.assistant .message-bubble').text()).toBe(
+      '已收到',
+    )
+    expect(
+      wrapper.find('.message-row.assistant .message-bubble').text(),
+    ).not.toContain('抱歉')
   })
 
   it('接口返回非 2xx 时给出兜底提示并复位状态', async () => {

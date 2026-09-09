@@ -1,5 +1,5 @@
 pipeline {
-    agent any
+    agent any  //  使用任意可用的代理执行此流水线
     environment {
         PATH = "/usr/local/bin:${env.PATH}"
     }

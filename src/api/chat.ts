@@ -28,13 +28,17 @@ export async function startChat(payload: ChatRequest): Promise<ChatResponse> {
   return data
 }
 
-export async function startChatStream(payload:MessageItem[]){
+export async function startChatStream(
+  payload: MessageItem[],
+  signal?: AbortSignal,
+) {
   const res = await fetch('/api/chat/deepseek/stream_chat', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(payload),
+    signal,
   })
   return res
 }
