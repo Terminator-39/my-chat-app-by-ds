@@ -60,4 +60,26 @@ describe('startChatStream（流式）', () => {
 
     expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal)
   })
+
+  it('重连时发送同一个 requestId 和 Last-Event-ID，并携带登录令牌', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true })
+    vi.stubGlobal('fetch', fetchMock)
+    localStorage.setItem('access_token', 'token-abc')
+
+    await startChatStream(
+      [{ role: 'user', content: 'hi', sessionId: 'session-1' }],
+      undefined,
+      { requestId: 'request-1', lastEventId: 3 },
+    )
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe(
+      '/api/chat/deepseek/stream_chat?requestId=request-1&sessionId=session-1',
+    )
+    expect(init.headers).toEqual({
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer token-abc',
+      'Last-Event-ID': '3',
+    })
+  })
 })

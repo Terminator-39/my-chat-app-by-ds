@@ -3,7 +3,10 @@ import { nextTick, onBeforeUnmount, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { startChatStream } from '../api/chat'
 import { useUserStore } from '../store'
-import { readChatStream } from '../utils/chat-stream'
+import {
+  ChatStreamServerError,
+  readChatStream,
+} from '../utils/chat-stream'
 const userStore = useUserStore()
 
 interface Message {
@@ -24,6 +27,7 @@ const loading = ref(false)
 // 是否在等待模型输出首个字符：为 true 时显示"正在思考"动画，首字到达后隐藏
 const typing = ref(false)
 const conversation = ref('新的对话')
+const chatSessionId = ref('')
 const messageList = ref<HTMLElement>()
 const abortController = ref<AbortController | null>(null)
 
@@ -41,7 +45,11 @@ async function scrollToBottom() {
 async function sendMessage(content = input.value) {
   const text = content.trim()
   if (!text || loading.value) return
-  const sessionId = userStore.userInfo?.sessionId || ''
+  // 后端以 sessionId 作为历史会话键；没有登录返回的会话 ID 时，当前页面
+  // 生成一个会话级 UUID，保证多轮消息仍进入同一个历史，而新建对话会重置它。
+  const sessionId =
+    userStore.userInfo?.sessionId || chatSessionId.value || crypto.randomUUID()
+  chatSessionId.value = sessionId
   // 本地列表用完整消息（含展示字段 time/sessionId）
   const message: Message = { role: 'user', content: text, time: now(), sessionId }
   messages.value.push(message)
@@ -56,21 +64,46 @@ async function sendMessage(content = input.value) {
     // todo ----- stream ⬇
     // 只把最新这条用户消息发给模型，body 仅含 role/content；历史会话由服务端自行维护
     const payload = [{ role: message.role, content: message.content,sessionId }]
-    const res = await startChatStream(payload, controller.signal)
-    if (!res.ok) throw new Error(`请求失败（${res.status}）`)
-    if (!res.body) return
     // 占位一条 assistant 消息，只 push 一次，不能放进循环
     messages.value.push({ role: 'assistant', content: '', time: now(), sessionId })
     await scrollToBottom()
-    await readChatStream(res, {
-      signal: controller.signal,
-      onChunk: (delta) => {
-        // 首个字到达后隐藏"正在思考"动画，避免与输出内容重叠。
-        typing.value = false
-        // 通过响应式消息对象追加 chunk，触发页面增量更新。
-        messages.value[messages.value.length - 1].content += delta
-      },
-    })
+    const requestId = crypto.randomUUID()
+    let lastEventId = 0
+    let reconnectCount = 0
+    const maxReconnects = 3
+
+    while (true) {
+      try {
+        const response = await startChatStream(payload, controller.signal, {
+          requestId,
+          lastEventId,
+        })
+        if (!response.ok)
+          throw new ChatStreamServerError(`请求失败（${response.status}）`)
+
+        const result = await readChatStream(response, {
+          signal: controller.signal,
+          onEvent: (delta) => {
+            // 首个字到达后隐藏"正在思考"动画，避免与输出内容重叠。
+            typing.value = false
+            // 只追加当前事件；重连时后端从 Last-Event-ID 之后重放，不会重复内容。
+            messages.value[messages.value.length - 1].content += delta
+          },
+        })
+        lastEventId = result.lastEventId
+        if (result.completed) break
+      } catch (error) {
+        if (controller.signal.aborted) throw error
+        // 服务端已明确返回业务错误时不要重试，否则会反复重放同一个错误事件。
+        if (error instanceof ChatStreamServerError) throw error
+        if (reconnectCount >= maxReconnects) throw error
+      }
+
+      if (controller.signal.aborted) return
+      reconnectCount += 1
+      // 短暂网络抖动时复用同一个 requestId，从 Redis 继续消费，而不是重新生成。
+      await new Promise((resolve) => setTimeout(resolve, 500 * reconnectCount))
+    }
     // input.value = ''
 
     // todo ----- stream ⬆
@@ -96,12 +129,17 @@ async function sendMessage(content = input.value) {
     ElMessage.error(
       error instanceof Error ? error.message : '连接服务失败，请稍后再试',
     )
-    messages.value.push({
-      role: 'assistant',
-      content: '抱歉，我暂时无法连接服务。请检查后端是否已启动。',
-      time: now(),
-      sessionId,
-    })
+    const lastMessage = messages.value[messages.value.length - 1]
+    if (lastMessage?.role === 'assistant' && !lastMessage.content) {
+      lastMessage.content = '抱歉，我暂时无法连接服务。请检查后端是否已启动。'
+    } else {
+      messages.value.push({
+        role: 'assistant',
+        content: '抱歉，我暂时无法连接服务。请检查后端是否已启动。',
+        time: now(),
+        sessionId,
+      })
+    }
   } finally {
     if (abortController.value === controller) abortController.value = null
     loading.value = false
@@ -119,6 +157,7 @@ function resetChat() {
   messages.value = []
   input.value = ''
   conversation.value = '新的对话'
+  chatSessionId.value = ''
 }
 
 onBeforeUnmount(() => {

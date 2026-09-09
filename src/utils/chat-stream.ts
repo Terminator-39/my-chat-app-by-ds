@@ -7,9 +7,17 @@
  * @FilePath: /Demo_26_07/Demo_Front/my-chat-app/src/utils/chat-stream.ts
  */
 export interface ChatStreamOptions {
-  onChunk: (content: string) => void
+  onChunk?: (content: string) => void
+  onEvent?: (content: string, eventId: number) => void
   signal?: AbortSignal
 }
+
+export interface ChatStreamResult {
+  lastEventId: number
+  completed: boolean
+}
+
+export class ChatStreamServerError extends Error {}
 
 /**
  * 读取并解析 SSE 响应。
@@ -18,14 +26,15 @@ export interface ChatStreamOptions {
  */
 export async function readChatStream(
   response: Response,
-  { onChunk, signal }: ChatStreamOptions,
-): Promise<void> {
+  { onChunk, onEvent, signal }: ChatStreamOptions,
+): Promise<ChatStreamResult> {
   if (!response.body) throw new Error('流式响应没有响应体')
 
   const reader = response.body.getReader()
   const decoder = new TextDecoder('utf-8')
   let buffer = ''
   let finished = false
+  let lastEventId = 0
 
   /**
    * @description: 通过一系列的数据清洗、格式解析和条件判断，将原始的字符串事件转化为上层业务可直接使用的文本片段
@@ -33,8 +42,12 @@ export async function readChatStream(
    * @return {*}
    */
   const handleEvent = (event: string) => {
-    const data = event
-      .split(/\r?\n/)
+    const lines = event.split(/\r?\n/)
+    const idLine = lines.find((line) => line.startsWith('id:'))
+    const eventId = idLine ? Number(idLine.replace(/^id:\s?/, '')) : 0
+    if (Number.isInteger(eventId) && eventId > 0) lastEventId = eventId
+
+    const data = lines
       .filter((line) => line.startsWith('data:'))
       .map((line) => line.replace(/^data:\s?/, ''))
       .join('\n')
@@ -47,10 +60,15 @@ export async function readChatStream(
 
     // 后端当前返回 OpenAI/DeepSeek 风格的 delta，只把真正的文本向上层暴露。
     const json = JSON.parse(data) as {
+      error?: string
       choices?: Array<{ delta?: { content?: string } }>
     }
+    if (json.error) throw new ChatStreamServerError(json.error)
     const content = json.choices?.[0]?.delta?.content
-    if (content) onChunk(content)
+    if (content) {
+      onChunk?.(content)
+      onEvent?.(content, lastEventId)
+    }
   }
 
   const abortHandler = () => {
@@ -87,4 +105,6 @@ export async function readChatStream(
     // 释放读取器的锁
     reader.releaseLock()
   }
+
+  return { lastEventId, completed: finished }
 }

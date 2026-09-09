@@ -49,6 +49,8 @@ function buildPendingStream() {
 const event = (content: string) =>
   `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`
 const doneEvent = 'data: [DONE]\n\n'
+const idEvent = (id: number, content: string) =>
+  `id: ${id}\ndata: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`
 
 /** 让多层异步（fetch 读取 + SSE 解析）跑完 */
 async function flushAll() {
@@ -94,7 +96,7 @@ describe('Chat 视图', () => {
     expect(assistantRows[0].find('.message-bubble').text()).toBe('你好')
     // 请求体：首轮只有当前这条用户消息
     expect(startChatStreamMock.mock.calls[0][0]).toEqual([
-      { role: 'user', content: 'hi', sessionId: '' },
+      { role: 'user', content: 'hi', sessionId: expect.any(String) },
     ])
     // 输入已清空、"正在思考"动画消失
     expect(
@@ -117,10 +119,10 @@ describe('Chat 视图', () => {
 
     expect(startChatStreamMock).toHaveBeenCalledTimes(2)
     expect(startChatStreamMock.mock.calls[0][0]).toEqual([
-      { role: 'user', content: 'hi', sessionId: '' },
+      { role: 'user', content: 'hi', sessionId: expect.any(String) },
     ])
     expect(startChatStreamMock.mock.calls[1][0]).toEqual([
-      { role: 'user', content: '再来一个', sessionId: '' },
+      { role: 'user', content: '再来一个', sessionId: expect.any(String) },
     ])
   })
 
@@ -172,6 +174,35 @@ describe('Chat 视图', () => {
     expect(
       wrapper.find('.message-row.assistant .message-bubble').text(),
     ).not.toContain('抱歉')
+  })
+
+  it('断线后复用 requestId，并从上一个 SSE id 继续接收', async () => {
+    vi.useFakeTimers()
+    try {
+      startChatStreamMock
+        .mockResolvedValueOnce(buildSseResponse([idEvent(1, '你')]))
+        .mockResolvedValueOnce(
+          buildSseResponse([idEvent(2, '好'), doneEvent]),
+        )
+      const wrapper = mount(Chat)
+
+      await wrapper.find('textarea').setValue('hi')
+      await wrapper.find('textarea').trigger('keydown', { key: 'Enter' })
+      await flushAll()
+      await vi.advanceTimersByTimeAsync(500)
+      await flushAll()
+
+      expect(startChatStreamMock).toHaveBeenCalledTimes(2)
+      expect(startChatStreamMock.mock.calls[1][2]).toEqual({
+        requestId: startChatStreamMock.mock.calls[0][2].requestId,
+        lastEventId: 1,
+      })
+      expect(
+        wrapper.find('.message-row.assistant .message-bubble').text(),
+      ).toBe('你好')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('接口返回非 2xx 时给出兜底提示并复位状态', async () => {
