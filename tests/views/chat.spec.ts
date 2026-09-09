@@ -94,7 +94,7 @@ describe('Chat 视图', () => {
     expect(assistantRows[0].find('.message-bubble').text()).toBe('你好')
     // 请求体：首轮只有当前这条用户消息
     expect(startChatStreamMock.mock.calls[0][0]).toEqual([
-      { role: 'user', content: 'hi' },
+      { role: 'user', content: 'hi', sessionId: '' },
     ])
     // 输入已清空、"正在思考"动画消失
     expect(
@@ -117,10 +117,10 @@ describe('Chat 视图', () => {
 
     expect(startChatStreamMock).toHaveBeenCalledTimes(2)
     expect(startChatStreamMock.mock.calls[0][0]).toEqual([
-      { role: 'user', content: 'hi' },
+      { role: 'user', content: 'hi', sessionId: '' },
     ])
     expect(startChatStreamMock.mock.calls[1][0]).toEqual([
-      { role: 'user', content: '再来一个' },
+      { role: 'user', content: '再来一个', sessionId: '' },
     ])
   })
 

@@ -21,6 +21,7 @@ export interface ChatResponse {
 interface MessageItem {
   role: "user" | "assistant";
   content: string;
+  sessionId?: string;
 }
 
 export async function startChat(payload: ChatRequest): Promise<ChatResponse> {

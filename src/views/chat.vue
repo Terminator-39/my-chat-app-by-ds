@@ -3,6 +3,7 @@ import { nextTick, onBeforeUnmount, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { startChatStream } from '../api/chat'
 import { useUserStore } from '../store'
+import { readChatStream } from '../utils/chat-stream'
 const userStore = useUserStore()
 
 interface Message {
@@ -25,7 +26,6 @@ const typing = ref(false)
 const conversation = ref('新的对话')
 const messageList = ref<HTMLElement>()
 const abortController = ref<AbortController | null>(null)
-let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null
 
 const now = () =>
   new Intl.DateTimeFormat('zh-CN', {
@@ -62,40 +62,15 @@ async function sendMessage(content = input.value) {
     // 占位一条 assistant 消息，只 push 一次，不能放进循环
     messages.value.push({ role: 'assistant', content: '', time: now(), sessionId })
     await scrollToBottom()
-    // 获取流读取器
-    const reader = res.body.getReader()
-    currentReader = reader
-    // stream: true 跨 chunk 保留被截断的多字节字符（中文 3 字节），避免乱码
-    const decoder = new TextDecoder('utf-8')
-    let buffer = '' // 累积未消费文本，防止 SSE 事件被网络 chunk 切断导致内容丢失
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      // deepseek SSE 事件以 \n\n 分隔：data: {...}\n\n，只处理完整事件，剩余留到下一轮
-      const events = buffer.split('\n\n')
-      buffer = events.pop() ?? ''
-      for (const event of events) {
-        for (const line of event.split('\n')) {
-          const trimLine = line.trim()
-          if (!trimLine.startsWith('data:')) continue
-          const jsonStr = trimLine.replace(/^data:\s*/, '')
-          if (jsonStr === '[DONE]') continue
-          try {
-            const jsonObj = JSON.parse(jsonStr)
-            const delta = jsonObj.choices?.[0]?.delta?.content
-            if (delta) {
-              // 首个字到达后隐藏"正在思考"动画，避免与输出内容重叠
-              typing.value = false
-              // 通过 messages.value 的响应式代理更新最后一条 assistant 消息，触发视图更新
-              messages.value[messages.value.length - 1].content += delta
-            }
-          } catch {
-            // 有 buffer 兜底后理论上不会再有半截 JSON，保留兜底以防异常
-          }
-        }
-      }
-    }
+    await readChatStream(res, {
+      signal: controller.signal,
+      onChunk: (delta) => {
+        // 首个字到达后隐藏"正在思考"动画，避免与输出内容重叠。
+        typing.value = false
+        // 通过响应式消息对象追加 chunk，触发页面增量更新。
+        messages.value[messages.value.length - 1].content += delta
+      },
+    })
     // input.value = ''
 
     // todo ----- stream ⬆
@@ -128,7 +103,6 @@ async function sendMessage(content = input.value) {
       sessionId,
     })
   } finally {
-    currentReader = null
     if (abortController.value === controller) abortController.value = null
     loading.value = false
     typing.value = false
@@ -138,10 +112,6 @@ async function sendMessage(content = input.value) {
 
 async function stopGeneration() {
   abortController.value?.abort()
-  if (currentReader) {
-    await currentReader.cancel()
-    currentReader = null
-  }
 }
 
 function resetChat() {
