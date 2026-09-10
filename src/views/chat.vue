@@ -34,15 +34,27 @@ const messageList = ref<HTMLElement>()
 const abortController = ref<AbortController | null>(null)
 let markdownFrame: number | null = null
 
-function renderAssistantMarkdown() {
+/**
+ * @description: 渲染助手消息的 Markdown 内容
+ * @return {*}
+ */
+async function renderAssistantMarkdown() {
   const assistant = [...messages.value]
     .reverse()
     .find((message) => message.role === 'assistant')
-  if (assistant) assistant.renderedContent = renderMarkdown(assistant.content)
+  if (!assistant) return
+  const content = assistant.content
+  const renderedContent = await renderMarkdown(content)
+  // Shiki 是异步的；旧一帧晚到时不能覆盖更新后的内容。
+  if (assistant.content === content) assistant.renderedContent = renderedContent
 }
 
+
+/**
+ * @description: 将同一帧内到达的多个 token 合并成一次解析，避免 Markdown 解析阻塞流读取。
+ * @return {*}
+ */
 function scheduleAssistantMarkdown() {
-  // 将同一帧内到达的多个 token 合并成一次解析，避免 Markdown 解析阻塞流读取。
   if (markdownFrame !== null) return
   const schedule =
     typeof requestAnimationFrame === 'function'
@@ -50,7 +62,7 @@ function scheduleAssistantMarkdown() {
       : (callback: FrameRequestCallback) => window.setTimeout(callback, 0)
   markdownFrame = schedule(() => {
     markdownFrame = null
-    renderAssistantMarkdown()
+    void renderAssistantMarkdown()
   })
 }
 
@@ -166,7 +178,7 @@ async function sendMessage(content = input.value) {
       })
     }
   } finally {
-    renderAssistantMarkdown()
+    await renderAssistantMarkdown()
     if (abortController.value === controller) abortController.value = null
     loading.value = false
     typing.value = false
