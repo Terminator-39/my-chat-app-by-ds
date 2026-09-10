@@ -4,10 +4,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Chat from '../../src/views/chat.vue'
 
 // mock 掉 api 层，避免测试环境真实发起网络请求
-const { startChatStreamMock } = vi.hoisted(() => ({
+const {
+  startChatStreamMock,
+  getConversationsMock,
+  getConversationMock,
+} = vi.hoisted(() => ({
   startChatStreamMock: vi.fn(),
+  getConversationsMock: vi.fn(),
+  getConversationMock: vi.fn(),
 }))
-vi.mock('../../src/api/chat', () => ({ startChatStream: startChatStreamMock }))
+vi.mock('../../src/api/chat', () => ({
+  startChatStream: startChatStreamMock,
+  getConversations: getConversationsMock,
+  getConversation: getConversationMock,
+}))
 
 /** 构造一个一次吐出若干 SSE 分块的响应 */
 function buildSseResponse(chunks: string[]): Response {
@@ -70,6 +80,8 @@ async function sendByEnter(wrapper: VueWrapper, text: string) {
 describe('Chat 视图', () => {
   beforeEach(() => {
     startChatStreamMock.mockReset()
+    getConversationsMock.mockReset().mockResolvedValue([])
+    getConversationMock.mockReset()
     // chat.vue 内 useUserStore() 依赖一个激活的 pinia 实例
     setActivePinia(createPinia())
   })
@@ -79,6 +91,33 @@ describe('Chat 视图', () => {
     await sendByEnter(wrapper, '   ')
     expect(startChatStreamMock).not.toHaveBeenCalled()
     expect(wrapper.findAll('.message-row')).toHaveLength(0)
+  })
+
+  it('启动时加载后端会话列表和当前会话历史', async () => {
+    getConversationsMock.mockResolvedValue([
+      { id: 'remote-1', title: '远程会话', updated_at: 1 },
+    ])
+    getConversationMock.mockResolvedValue({
+      id: 'remote-1',
+      title: '远程会话',
+      updated_at: 1,
+      messages: [
+        { role: 'user', content: '历史 prompt' },
+        { role: 'assistant', content: '历史回答' },
+      ],
+    })
+    const wrapper = mount(Chat)
+    await flushAll()
+
+    expect(wrapper.find('.history-item').text()).toContain('远程会话')
+    expect(wrapper.find('.chat-header h1').text()).toContain('远程会话')
+    expect(wrapper.find('.message-row.user .message-bubble').text()).toBe(
+      '历史 prompt',
+    )
+    expect(wrapper.find('.message-row.assistant .message-bubble').text()).toBe(
+      '历史回答',
+    )
+    expect(getConversationMock).toHaveBeenCalledWith('remote-1')
   })
 
   it('流式响应逐字渲染到一条 assistant 消息并正确收尾', async () => {

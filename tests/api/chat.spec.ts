@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { startChat, startChatStream } from '../../src/api/chat'
+import {
+  getConversation,
+  getConversations,
+  startChat,
+  startChatStream,
+} from '../../src/api/chat'
 
 const { postMock } = vi.hoisted(() => ({ postMock: vi.fn() }))
 vi.mock('../../src/api/http', () => ({ default: { post: postMock } }))
@@ -81,5 +86,47 @@ describe('startChatStream（流式）', () => {
       Authorization: 'Bearer token-abc',
       'Last-Event-ID': '3',
     })
+  })
+
+  it('读取会话列表和指定会话历史时携带登录令牌', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            code: 200,
+            message: 'success',
+            data: [{ id: 's1', title: '会话一' }],
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            code: 200,
+            message: 'success',
+            data: { id: 's1', title: '会话一', messages: [] },
+          }),
+          { status: 200 },
+        ),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    localStorage.setItem('access_token', 'token-abc')
+
+    expect(await getConversations()).toEqual([{ id: 's1', title: '会话一' }])
+    expect(await getConversation('会话/一')).toEqual({
+      id: 's1',
+      title: '会话一',
+      messages: [],
+    })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/chat/deepseek/conversations')
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({
+      Authorization: 'Bearer token-abc',
+    })
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      '/api/chat/deepseek/conversations/%E4%BC%9A%E8%AF%9D%2F%E4%B8%80',
+    )
   })
 })

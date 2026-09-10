@@ -20,9 +20,12 @@ export interface ChatStreamResult {
 export class ChatStreamServerError extends Error {}
 
 /**
- * 读取并解析 SSE 响应。
+ * 读取并解析聊天接口的 SSE 响应。
  * 网络 chunk 不等于 SSE 事件：JSON、换行符甚至 UTF-8 字符都可能被切开，
  * 所以必须先累积文本，再按空行拆出完整事件。
+ * @param response fetch 返回的 SSE 响应
+ * @param options 事件回调、取消信号和解析配置
+ * @returns 最后收到的事件 ID及流是否正常结束
  */
 export async function readChatStream(
   response: Response,

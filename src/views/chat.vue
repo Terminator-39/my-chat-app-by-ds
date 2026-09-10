@@ -1,7 +1,12 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { startChatStream } from '../api/chat'
+import {
+  getConversation,
+  getConversations,
+  startChatStream,
+  type ConversationDetail,
+} from '../api/chat'
 import { ChatStreamServerError, readChatStream } from '../utils/chat-stream'
 import { renderMarkdown } from '../utils/markdown'
 
@@ -17,6 +22,7 @@ interface Conversation {
   id: string
   title: string
   messages: Message[]
+  loaded: boolean
 }
 
 const suggestions = [
@@ -26,7 +32,7 @@ const suggestions = [
 ]
 const initialConversationId = crypto.randomUUID()
 const conversations = ref<Conversation[]>([
-  { id: initialConversationId, title: '新的对话', messages: [] },
+  { id: initialConversationId, title: '新的对话', messages: [], loaded: true },
 ])
 const activeConversationId = ref<string>(initialConversationId)
 const messages = ref<Message[]>(conversations.value[0].messages)
@@ -36,6 +42,7 @@ const loading = ref(false)
 const typing = ref(false)
 // stopping 单独于 loading：取消请求需要等待 reader/fetch 收尾，期间按钮必须进入“停止中”状态。
 const stopping = ref(false)
+const loadingHistory = ref(false)
 const conversation = ref('新的对话')
 // 登录用户 ID 只用于鉴权；每个独立聊天窗口使用自己的会话 ID，避免多个对话共享历史。
 const chatSessionId = ref<string>(initialConversationId)
@@ -44,8 +51,8 @@ const abortController = ref<AbortController | null>(null)
 let markdownFrame: number | null = null
 
 /**
- * @description: 渲染助手消息的 Markdown 内容
- * @return {*}
+ * 渲染当前会话最新一条 assistant 消息的 Markdown 内容。
+ * 流式 token 到达时使用该方法，避免每次重新处理整段历史。
  */
 async function renderAssistantMarkdown() {
   const assistant = [...messages.value]
@@ -59,8 +66,23 @@ async function renderAssistantMarkdown() {
 }
 
 /**
- * @description: 将同一帧内到达的多个 token 合并成一次解析，避免 Markdown 解析阻塞流读取。
- * @return {*}
+ * 渲染当前会话中的全部 assistant 历史消息。
+ * 会话从后端加载或切换时使用，确保历史消息也拥有 renderedContent。
+ */
+async function renderAllAssistantMarkdown() {
+  const assistants = messages.value.filter((message) => message.role === 'assistant')
+  await Promise.all(
+    assistants.map(async (assistant) => {
+      const content = assistant.content
+      const renderedContent = await renderMarkdown(content)
+      // 历史加载期间如果会话发生切换，不能把旧会话的结果写入当前消息对象。
+      if (assistant.content === content) assistant.renderedContent = renderedContent
+    }),
+  )
+}
+
+/**
+ * 合并同一帧内到达的多个 token，减少 Markdown 解析次数。
  */
 function scheduleAssistantMarkdown() {
   if (markdownFrame !== null) return
@@ -74,11 +96,17 @@ function scheduleAssistantMarkdown() {
   })
 }
 
+/**
+ * 返回当前时间，用于消息列表显示。
+ */
 const now = () =>
   new Intl.DateTimeFormat('zh-CN', {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date())
+/**
+ * 将当前消息列表滚动到最底部，保证流式输出始终可见。
+ */
 async function scrollToBottom() {
   await nextTick()
   if (messageList.value)
@@ -86,8 +114,7 @@ async function scrollToBottom() {
 }
 
 /**
- * @description: 滚动到最后一条用户的prompt
- * @return {*}
+ * 切换会话后定位到该会话最后一条用户 prompt。
  */
 async function scrollToLastUserPrompt(): Promise<void> {
   await nextTick()
@@ -98,9 +125,12 @@ async function scrollToLastUserPrompt(): Promise<void> {
   )
   const lastPrompt = prompts[prompts.length - 1]
   // 直接设置滚动容器位置，兼容自定义滚动容器和测试环境中的 jsdom。
-  list.scrollTop = lastPrompt ? Math.max(lastPrompt.offsetTop - 16, 0) : 0
+  list.scrollTop = lastPrompt ? Math.max(lastPrompt.offsetTop - 50, 0) : 0
 }
 
+/**
+ * 将当前响应式消息数组和标题同步回活动会话对象。
+ */
 function saveActiveConversation() {
   const active = conversations.value.find(
     (item) => item.id === activeConversationId.value,
@@ -110,10 +140,76 @@ function saveActiveConversation() {
   active.title = conversation.value
 }
 
+/**
+ * 将后端历史消息转换为前端消息模型。
+ * @param detail 后端返回的会话详情
+ * @returns 带显示时间和会话 ID 的前端消息数组
+ */
+function toMessages(detail: ConversationDetail): Message[] {
+  return detail.messages.map((message) => ({
+    role: message.role,
+    content: message.content,
+    time: now(),
+    sessionId: detail.id,
+  }))
+}
+
+/**
+ * 初始化加载当前用户的最近会话，并加载最新会话的完整历史。
+ * 接口失败时保留本地空会话，避免聊天页面无法继续使用。
+ */
+async function loadConversations() {
+  try {
+    const summaries = await getConversations()
+    if (!summaries.length) return
+
+    const loaded = summaries.map<Conversation>((item) => ({
+      id: item.id,
+      title: item.title,
+      messages: [],
+      loaded: false,
+    }))
+    conversations.value = loaded
+    const latest = loaded[0]
+    activeConversationId.value = latest.id
+    chatSessionId.value = latest.id
+    conversation.value = latest.title
+    loadingHistory.value = true
+    const detail = await getConversation(latest.id)
+    latest.messages = toMessages(detail)
+    latest.loaded = true
+    messages.value = latest.messages
+    await renderAllAssistantMarkdown()
+  } catch {
+    // 未登录或接口暂不可用时保留本地新会话，不影响当前页面继续发起聊天。
+  } finally {
+    loadingHistory.value = false
+  }
+}
+
+/**
+ * 切换当前会话；未加载过的会话先从后端按需读取历史。
+ * @param id 目标会话 ID
+ */
 async function switchConversation(id: string) {
-  if (loading.value || id === activeConversationId.value) return
+  if (loading.value || loadingHistory.value || id === activeConversationId.value) return
   const target = conversations.value.find((item) => item.id === id)
   if (!target) return
+
+  if (!target.loaded) {
+    loadingHistory.value = true
+    try {
+      target.messages = toMessages(await getConversation(target.id))
+      target.loaded = true
+      messages.value = target.messages
+      await renderAllAssistantMarkdown()
+    } catch {
+      ElMessage.error('加载会话失败，请稍后再试')
+      return
+    } finally {
+      loadingHistory.value = false
+    }
+  }
 
   // 生成期间禁止切换；否则流式 token 可能追加到新会话中。
   saveActiveConversation()
@@ -124,6 +220,11 @@ async function switchConversation(id: string) {
   await scrollToLastUserPrompt()
 }
 
+/**
+ * 创建一个可被 AbortSignal 中断的重连退避等待。
+ * @param delay 等待毫秒数
+ * @param signal 当前生成请求的取消信号
+ */
 function waitForReconnect(delay: number, signal: AbortSignal) {
   return new Promise<void>((resolve) => {
     if (signal.aborted) {
@@ -149,6 +250,11 @@ function waitForReconnect(delay: number, signal: AbortSignal) {
   })
 }
 
+/**
+ * 发送一轮用户消息并消费 assistant 的 SSE 增量响应。
+ * 断线时复用同一个 requestId 和最后事件 ID进行重连。
+ * @param content 待发送的用户 prompt
+ */
 async function sendMessage(content = input.value) {
   const text = content.trim()
   if (!text || loading.value) return
@@ -276,6 +382,9 @@ async function sendMessage(content = input.value) {
   }
 }
 
+/**
+ * 取消当前生成请求，保留已经收到的 assistant 内容。
+ */
 async function stopGeneration() {
   const controller = abortController.value
   if (!controller) return
@@ -284,6 +393,9 @@ async function stopGeneration() {
   controller.abort()
 }
 
+/**
+ * 创建并切换到新的空会话；生成期间不允许清空正在写入的会话。
+ */
 function resetChat() {
   if (loading.value) return
   saveActiveConversation()
@@ -291,6 +403,7 @@ function resetChat() {
     id: crypto.randomUUID(),
     title: '新的对话',
     messages: [],
+    loaded: true,
   }
   // unshift 保证新建的会话始终出现在“最近对话”列表顶部。
   conversations.value.unshift(nextConversation)
@@ -307,6 +420,13 @@ onBeforeUnmount(() => {
     cancelAnimationFrame(markdownFrame)
   }
 })
+
+onMounted(() => {
+  void loadConversations()
+})
+/**
+ * 处理输入框快捷键：Enter 发送，Shift+Enter 换行。
+ */
 function handleKeydown(event: KeyboardEvent) {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
@@ -324,7 +444,7 @@ function handleKeydown(event: KeyboardEvent) {
       <button
         class="new-chat"
         type="button"
-        :disabled="loading"
+        :disabled="loading || loadingHistory"
         @click="resetChat"
       >
         <span>＋</span> 新建对话
@@ -336,7 +456,7 @@ function handleKeydown(event: KeyboardEvent) {
         class="history-item"
         :class="{ active: item.id === activeConversationId }"
         type="button"
-        :disabled="loading"
+        :disabled="loading || loadingHistory"
         @click="switchConversation(item.id)"
       >
         <span class="history-dot">◌</span><span>{{ item.title }}</span>
@@ -361,7 +481,8 @@ function handleKeydown(event: KeyboardEvent) {
         </div>
       </header>
       <div ref="messageList" class="message-list">
-        <div v-if="!messages.length" class="empty-state">
+        <div v-if="loadingHistory" class="history-loading">加载对话中…</div>
+        <div v-else-if="!messages.length" class="empty-state">
           <div class="welcome-orb"><span>✦</span></div>
           <div class="welcome-kicker">GOOD TO SEE YOU</div>
           <h2>今天想和我聊点什么？</h2>
@@ -553,6 +674,12 @@ function handleKeydown(event: KeyboardEvent) {
 }
 .history-dot {
   color: #a378f4;
+}
+.history-loading {
+  padding: 24px;
+  color: #9490a8;
+  font-size: 12px;
+  text-align: center;
 }
 .sidebar-footer {
   display: flex;

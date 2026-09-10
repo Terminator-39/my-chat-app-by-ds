@@ -30,6 +30,10 @@ interface MermaidApi {
 
 let mermaidPromise: Promise<MermaidApi> | undefined
 
+/**
+ * 按需加载并初始化 Mermaid，避免普通 Markdown 消息承担图表依赖成本。
+ * @returns 可复用的 Mermaid 实例
+ */
 function loadMermaid(): Promise<MermaidApi> {
   // Mermaid 只在实际出现 mermaid 代码块时加载，普通 Markdown 不增加首屏成本。
   mermaidPromise ??= import('mermaid').then(({ default: mermaid }) => {
@@ -51,6 +55,10 @@ interface Highlighter {
 
 let highlighterPromise: Promise<Highlighter> | undefined
 
+/**
+ * 按需创建 Shiki 高亮器，并只加载项目支持的语言和主题。
+ * @returns 可复用的 Shiki 高亮器
+ */
 function loadHighlighter(): Promise<Highlighter> {
   // 只有遇到已支持的 fenced code block 时才加载 Shiki，避免普通聊天首屏加载高亮器。
   highlighterPromise ??= Promise.all([
@@ -99,6 +107,11 @@ interface HastNode {
   value?: string
 }
 
+/**
+ * 从代码节点的 language-* class 中提取并标准化语言名。
+ * @param node Markdown 转换后的代码节点
+ * @returns 标准化语言名；没有语言标记时返回 undefined
+ */
 function getLanguage(node: HastNode): string | undefined {
   const className = node.properties?.className ?? []
   const languageClass = className.find((name) => name.startsWith('language-'))
@@ -108,9 +121,9 @@ function getLanguage(node: HastNode): string | undefined {
 }
 
 /**
- * 获取Hast节点的文本内容
- * @param node Hast节点对象，包含type和children属性
- * @returns 返回节点中所有文本内容的拼接结果
+ * 递归提取 HAST 节点中的纯文本代码。
+ * @param node HAST 节点
+ * @returns 节点及其子节点拼接后的代码文本
  */
 function getCodeText(node: HastNode): string {
   return (node.children ?? [])  // 如果节点没有children属性，则使用空数组
@@ -119,9 +132,9 @@ function getCodeText(node: HastNode): string {
 }
 
 /**
- * @description: 通过shiki将代码块高亮
- * @param {HastNode} node
- * @return {*}
+ * 遍历 Markdown 语法树，将 Mermaid 和支持的代码块替换为渲染结果。
+ * @param node 当前 HAST 节点
+ * @returns 处理完成的 Promise；失败时保留普通代码块作为降级结果
  */
 async function highlightCodeBlocks(node: HastNode): Promise<void> {
   if (!node.children) return
@@ -167,9 +180,9 @@ async function highlightCodeBlocks(node: HastNode): Promise<void> {
 }
 
 /**
- * 将 Markdown 文本渲染为 HTML 字符串
- * @param markdown - 要渲染的 Markdown 格式文本
- * @returns Promise<string> - 渲染后的 HTML 字符串，经过安全处理
+ * 将 Markdown 文本转换为经过高亮、图表处理和 XSS 清洗的 HTML。
+ * @param markdown Markdown 源文本
+ * @returns 可安全交给 v-html 使用的 HTML 字符串
  */
 export async function renderMarkdown(markdown: string): Promise<string> {
   // 使用 processor 解析 Markdown 并转换为语法树 (HastNode)
