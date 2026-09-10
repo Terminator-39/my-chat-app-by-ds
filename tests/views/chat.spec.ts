@@ -124,6 +124,48 @@ describe('Chat 视图', () => {
     expect(startChatStreamMock.mock.calls[1][0]).toEqual([
       { role: 'user', content: '再来一个', sessionId: expect.any(String) },
     ])
+    expect(startChatStreamMock.mock.calls[1][0][0].sessionId).toBe(
+      startChatStreamMock.mock.calls[0][0][0].sessionId,
+    )
+  })
+
+  it('新建对话会生成新的会话 ID，不复用上一段历史', async () => {
+    startChatStreamMock
+      .mockResolvedValueOnce(buildSseResponse([event('第一段'), doneEvent]))
+      .mockResolvedValueOnce(buildSseResponse([event('第二段'), doneEvent]))
+    const wrapper = mount(Chat)
+
+    await sendByEnter(wrapper, '第一条')
+    const firstSessionId = startChatStreamMock.mock.calls[0][0][0].sessionId
+
+    await wrapper.find('.new-chat').trigger('click')
+    await sendByEnter(wrapper, '第二条')
+    const secondSessionId = startChatStreamMock.mock.calls[1][0][0].sessionId
+
+    expect(secondSessionId).not.toBe(firstSessionId)
+    expect(wrapper.findAll('.history-item')).toHaveLength(2)
+    expect(wrapper.find('.history-item').text()).toContain('第二条')
+  })
+
+  it('切换历史对话会恢复消息，并滚动到最后一条用户 prompt', async () => {
+    startChatStreamMock
+      .mockResolvedValueOnce(buildSseResponse([event('第一段'), doneEvent]))
+      .mockResolvedValueOnce(buildSseResponse([event('第二段'), doneEvent]))
+    const wrapper = mount(Chat)
+
+    await sendByEnter(wrapper, '第一条')
+    await wrapper.find('.new-chat').trigger('click')
+    await sendByEnter(wrapper, '第二条')
+
+    Object.defineProperty(HTMLElement.prototype, 'offsetTop', {
+      configurable: true,
+      value: 120,
+    })
+    await wrapper.findAll('.history-item')[1].trigger('click')
+
+    expect(wrapper.find('.chat-header h1').text()).toContain('第一条')
+    expect(wrapper.find('.message-row.user .message-bubble').text()).toBe('第一条')
+    expect(wrapper.find('.message-list').element.scrollTop).toBe(104)
   })
 
   it('首字到达前显示"正在思考"，结束后消失', async () => {

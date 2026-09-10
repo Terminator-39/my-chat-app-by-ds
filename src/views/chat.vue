@@ -2,13 +2,8 @@
 import { nextTick, onBeforeUnmount, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { startChatStream } from '../api/chat'
-import { useUserStore } from '../store'
-import {
-  ChatStreamServerError,
-  readChatStream,
-} from '../utils/chat-stream'
+import { ChatStreamServerError, readChatStream } from '../utils/chat-stream'
 import { renderMarkdown } from '../utils/markdown'
-const userStore = useUserStore()
 
 interface Message {
   role: 'user' | 'assistant'
@@ -18,12 +13,23 @@ interface Message {
   renderedContent?: string
 }
 
+interface Conversation {
+  id: string
+  title: string
+  messages: Message[]
+}
+
 const suggestions = [
   '帮我写一份产品需求文档',
   '把这段话翻译成英文',
   '分析一下我的工作计划',
 ]
-const messages = ref<Message[]>([])
+const initialConversationId = crypto.randomUUID()
+const conversations = ref<Conversation[]>([
+  { id: initialConversationId, title: '新的对话', messages: [] },
+])
+const activeConversationId = ref<string>(initialConversationId)
+const messages = ref<Message[]>(conversations.value[0].messages)
 const input = ref('')
 const loading = ref(false)
 // 是否在等待模型输出首个字符：为 true 时显示"正在思考"动画，首字到达后隐藏
@@ -31,7 +37,8 @@ const typing = ref(false)
 // stopping 单独于 loading：取消请求需要等待 reader/fetch 收尾，期间按钮必须进入“停止中”状态。
 const stopping = ref(false)
 const conversation = ref('新的对话')
-const chatSessionId = ref('')
+// 登录用户 ID 只用于鉴权；每个独立聊天窗口使用自己的会话 ID，避免多个对话共享历史。
+const chatSessionId = ref<string>(initialConversationId)
 const messageList = ref<HTMLElement>()
 const abortController = ref<AbortController | null>(null)
 let markdownFrame: number | null = null
@@ -50,7 +57,6 @@ async function renderAssistantMarkdown() {
   // Shiki 是异步的；旧一帧晚到时不能覆盖更新后的内容。
   if (assistant.content === content) assistant.renderedContent = renderedContent
 }
-
 
 /**
  * @description: 将同一帧内到达的多个 token 合并成一次解析，避免 Markdown 解析阻塞流读取。
@@ -77,6 +83,45 @@ async function scrollToBottom() {
   await nextTick()
   if (messageList.value)
     messageList.value.scrollTop = messageList.value.scrollHeight
+}
+
+/**
+ * @description: 滚动到最后一条用户的prompt
+ * @return {*}
+ */
+async function scrollToLastUserPrompt(): Promise<void> {
+  await nextTick()
+  const list = messageList.value
+  if (!list) return
+  const prompts = list.querySelectorAll<HTMLElement>(
+    '[data-message-role="user"]',
+  )
+  const lastPrompt = prompts[prompts.length - 1]
+  // 直接设置滚动容器位置，兼容自定义滚动容器和测试环境中的 jsdom。
+  list.scrollTop = lastPrompt ? Math.max(lastPrompt.offsetTop - 16, 0) : 0
+}
+
+function saveActiveConversation() {
+  const active = conversations.value.find(
+    (item) => item.id === activeConversationId.value,
+  )
+  if (!active) return
+  active.messages = messages.value
+  active.title = conversation.value
+}
+
+async function switchConversation(id: string) {
+  if (loading.value || id === activeConversationId.value) return
+  const target = conversations.value.find((item) => item.id === id)
+  if (!target) return
+
+  // 生成期间禁止切换；否则流式 token 可能追加到新会话中。
+  saveActiveConversation()
+  activeConversationId.value = target.id
+  chatSessionId.value = target.id
+  conversation.value = target.title
+  messages.value = target.messages
+  await scrollToLastUserPrompt()
 }
 
 function waitForReconnect(delay: number, signal: AbortSignal) {
@@ -107,16 +152,25 @@ function waitForReconnect(delay: number, signal: AbortSignal) {
 async function sendMessage(content = input.value) {
   const text = content.trim()
   if (!text || loading.value) return
-  // 后端以 sessionId 作为历史会话键；没有登录返回的会话 ID 时，当前页面
-  // 生成一个会话级 UUID，保证多轮消息仍进入同一个历史，而新建对话会重置它。
-  const sessionId =
-    userStore.userInfo?.sessionId || chatSessionId.value || crypto.randomUUID()
-  chatSessionId.value = sessionId
+  // sessionId 是当前对话的 ID，不再复用登录接口返回的用户级 ID；同一对话的多轮消息
+  // 复用它，后端才能从同一份历史中组装上下文。
+  const sessionId = chatSessionId.value
   // 本地列表用完整消息（含展示字段 time/sessionId）
-  const message: Message = { role: 'user', content: text, time: now(), sessionId }
+  const message: Message = {
+    role: 'user',
+    content: text,
+    time: now(),
+    sessionId,
+  }
   messages.value.push(message)
   input.value = ''
-  if (conversation.value === '新的对话') conversation.value = text.slice(0, 22)
+  if (conversation.value === '新的对话') {
+    conversation.value = text.slice(0, 22)
+    const active = conversations.value.find(
+      (item) => item.id === activeConversationId.value,
+    )
+    if (active) active.title = conversation.value
+  }
   loading.value = true
   typing.value = true
   stopping.value = false
@@ -126,9 +180,16 @@ async function sendMessage(content = input.value) {
   try {
     // todo ----- stream ⬇
     // 只把最新这条用户消息发给模型，body 仅含 role/content；历史会话由服务端自行维护
-    const payload = [{ role: message.role, content: message.content,sessionId }]
+    const payload = [
+      { role: message.role, content: message.content, sessionId },
+    ]
     // 占位一条 assistant 消息，只 push 一次，不能放进循环
-    messages.value.push({ role: 'assistant', content: '', time: now(), sessionId })
+    messages.value.push({
+      role: 'assistant',
+      content: '',
+      time: now(),
+      sessionId,
+    })
     await scrollToBottom()
     const requestId = crypto.randomUUID()
     let lastEventId = 0
@@ -224,11 +285,20 @@ async function stopGeneration() {
 }
 
 function resetChat() {
-  void stopGeneration()
-  messages.value = []
+  if (loading.value) return
+  saveActiveConversation()
+  const nextConversation: Conversation = {
+    id: crypto.randomUUID(),
+    title: '新的对话',
+    messages: [],
+  }
+  // unshift 保证新建的会话始终出现在“最近对话”列表顶部。
+  conversations.value.unshift(nextConversation)
+  activeConversationId.value = nextConversation.id
+  chatSessionId.value = nextConversation.id
+  messages.value = nextConversation.messages
   input.value = ''
   conversation.value = '新的对话'
-  chatSessionId.value = ''
 }
 
 onBeforeUnmount(() => {
@@ -251,12 +321,25 @@ function handleKeydown(event: KeyboardEvent) {
       <div class="brand">
         <span class="brand-mark">✦</span><span>Neura</span>
       </div>
-      <button class="new-chat" type="button" @click="resetChat">
+      <button
+        class="new-chat"
+        type="button"
+        :disabled="loading"
+        @click="resetChat"
+      >
         <span>＋</span> 新建对话
       </button>
       <div class="sidebar-section-label">最近对话</div>
-      <button class="history-item active" type="button">
-        <span class="history-dot">◌</span><span>{{ conversation }}</span>
+      <button
+        v-for="item in conversations"
+        :key="item.id"
+        class="history-item"
+        :class="{ active: item.id === activeConversationId }"
+        type="button"
+        :disabled="loading"
+        @click="switchConversation(item.id)"
+      >
+        <span class="history-dot">◌</span><span>{{ item.title }}</span>
       </button>
       <div class="sidebar-footer">
         <div class="profile-avatar">W</div>
@@ -300,6 +383,7 @@ function handleKeydown(event: KeyboardEvent) {
             :key="`${message.time}-${index}`"
             class="message-row"
             :class="message.role"
+            :data-message-role="message.role"
           >
             <div v-if="message.role === 'assistant'" class="message-avatar">
               ✦
@@ -421,6 +505,11 @@ function handleKeydown(event: KeyboardEvent) {
   border: 1px solid var(--line);
   color: #eeebf8;
   background: transparent;
+}
+.new-chat:disabled,
+.history-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 .new-chat {
   display: flex;
