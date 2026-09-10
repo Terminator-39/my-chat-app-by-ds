@@ -142,6 +142,7 @@ describe('Chat 视图', () => {
     expect(wrapper.find('.typing').exists()).toBe(true)
 
     emit(event('早'))
+    emit(doneEvent)
     end()
     await flushAll()
 

@@ -7,6 +7,7 @@ import {
   ChatStreamServerError,
   readChatStream,
 } from '../utils/chat-stream'
+import { renderMarkdown } from '../utils/markdown'
 const userStore = useUserStore()
 
 interface Message {
@@ -14,6 +15,7 @@ interface Message {
   content: string
   time: string
   sessionId?: string
+  renderedContent?: string
 }
 
 const suggestions = [
@@ -30,6 +32,27 @@ const conversation = ref('新的对话')
 const chatSessionId = ref('')
 const messageList = ref<HTMLElement>()
 const abortController = ref<AbortController | null>(null)
+let markdownFrame: number | null = null
+
+function renderAssistantMarkdown() {
+  const assistant = [...messages.value]
+    .reverse()
+    .find((message) => message.role === 'assistant')
+  if (assistant) assistant.renderedContent = renderMarkdown(assistant.content)
+}
+
+function scheduleAssistantMarkdown() {
+  // 将同一帧内到达的多个 token 合并成一次解析，避免 Markdown 解析阻塞流读取。
+  if (markdownFrame !== null) return
+  const schedule =
+    typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : (callback: FrameRequestCallback) => window.setTimeout(callback, 0)
+  markdownFrame = schedule(() => {
+    markdownFrame = null
+    renderAssistantMarkdown()
+  })
+}
 
 const now = () =>
   new Intl.DateTimeFormat('zh-CN', {
@@ -87,7 +110,9 @@ async function sendMessage(content = input.value) {
             // 首个字到达后隐藏"正在思考"动画，避免与输出内容重叠。
             typing.value = false
             // 只追加当前事件；重连时后端从 Last-Event-ID 之后重放，不会重复内容。
-            messages.value[messages.value.length - 1].content += delta
+            const assistant = messages.value[messages.value.length - 1]
+            assistant.content += delta
+            scheduleAssistantMarkdown()
           },
         })
         lastEventId = result.lastEventId
@@ -141,6 +166,7 @@ async function sendMessage(content = input.value) {
       })
     }
   } finally {
+    renderAssistantMarkdown()
     if (abortController.value === controller) abortController.value = null
     loading.value = false
     typing.value = false
@@ -162,6 +188,9 @@ function resetChat() {
 
 onBeforeUnmount(() => {
   void stopGeneration()
+  if (markdownFrame !== null && typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(markdownFrame)
+  }
 })
 function handleKeydown(event: KeyboardEvent) {
   if (event.key === 'Enter' && !event.shiftKey) {
@@ -235,7 +264,12 @@ function handleKeydown(event: KeyboardEvent) {
                 {{ message.role === 'assistant' ? 'Neura' : '你' }} ·
                 {{ message.time }}
               </div>
-              <div class="message-bubble">{{ message.content }}</div>
+              <div
+                v-if="message.role === 'assistant'"
+                class="message-bubble markdown-body"
+                v-html="message.renderedContent ?? ''"
+              ></div>
+              <div v-else class="message-bubble">{{ message.content }}</div>
             </div>
             <div v-if="message.role === 'user'" class="user-avatar">W</div>
           </div>
@@ -573,6 +607,7 @@ function handleKeydown(event: KeyboardEvent) {
 }
 .message-content {
   max-width: min(76%, 620px);
+  text-align: left;
 }
 .message-meta {
   margin: 2px 0 7px;
@@ -591,6 +626,32 @@ function handleKeydown(event: KeyboardEvent) {
   line-height: 1.75;
   white-space: pre-wrap;
   background: rgba(255, 255, 255, 0.045);
+}
+.markdown-body :deep(p) {
+  margin: 0;
+}
+.markdown-body {
+  line-height: 1.25;
+}
+.markdown-body :deep(p + p) {
+  margin-top: 0.45em;
+}
+.markdown-body :deep(pre) {
+  overflow-x: auto;
+  margin: 10px 0 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+}
+.markdown-body :deep(pre code) {
+  display: block;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  white-space: pre;
+}
+.markdown-body :deep(a) {
+  color: #c5a7ff;
 }
 .message-row.user .message-bubble {
   border: 0;
