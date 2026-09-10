@@ -192,8 +192,10 @@ async function loadConversations() {
  * @param id 目标会话 ID
  */
 async function switchConversation(id: string) {
+  // debugger
   if (loading.value || loadingHistory.value || id === activeConversationId.value) return
   const target = conversations.value.find((item) => item.id === id)
+  target!.loaded = false
   if (!target) return
 
   if (!target.loaded) {
