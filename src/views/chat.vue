@@ -28,6 +28,8 @@ const input = ref('')
 const loading = ref(false)
 // 是否在等待模型输出首个字符：为 true 时显示"正在思考"动画，首字到达后隐藏
 const typing = ref(false)
+// stopping 单独于 loading：取消请求需要等待 reader/fetch 收尾，期间按钮必须进入“停止中”状态。
+const stopping = ref(false)
 const conversation = ref('新的对话')
 const chatSessionId = ref('')
 const messageList = ref<HTMLElement>()
@@ -77,6 +79,31 @@ async function scrollToBottom() {
     messageList.value.scrollTop = messageList.value.scrollHeight
 }
 
+function waitForReconnect(delay: number, signal: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    if (signal.aborted) {
+      resolve()
+      return
+    }
+
+    // 将退避计时器与 AbortSignal 绑定，用户点击停止后不再无意义地等待下一次重连。
+    let settled = false
+    const cleanup = () => signal.removeEventListener('abort', onAbort)
+    const finish = () => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve()
+    }
+    const timer = window.setTimeout(finish, delay)
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      finish()
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 async function sendMessage(content = input.value) {
   const text = content.trim()
   if (!text || loading.value) return
@@ -92,6 +119,7 @@ async function sendMessage(content = input.value) {
   if (conversation.value === '新的对话') conversation.value = text.slice(0, 22)
   loading.value = true
   typing.value = true
+  stopping.value = false
   await scrollToBottom()
   const controller = new AbortController()
   abortController.value = controller
@@ -139,7 +167,7 @@ async function sendMessage(content = input.value) {
       if (controller.signal.aborted) return
       reconnectCount += 1
       // 短暂网络抖动时复用同一个 requestId，从 Redis 继续消费，而不是重新生成。
-      await new Promise((resolve) => setTimeout(resolve, 500 * reconnectCount))
+      await waitForReconnect(500 * reconnectCount, controller.signal)
     }
     // input.value = ''
 
@@ -182,12 +210,17 @@ async function sendMessage(content = input.value) {
     if (abortController.value === controller) abortController.value = null
     loading.value = false
     typing.value = false
+    stopping.value = false
     await scrollToBottom()
   }
 }
 
 async function stopGeneration() {
-  abortController.value?.abort()
+  const controller = abortController.value
+  if (!controller) return
+  // 先更新界面，再终止底层请求；这样慢网络下用户能立即知道点击已生效。
+  stopping.value = true
+  controller.abort()
 }
 
 function resetChat() {
@@ -310,10 +343,12 @@ function handleKeydown(event: KeyboardEvent) {
               v-if="loading"
               class="send-button stop-button"
               type="button"
-              aria-label="停止生成"
+              :disabled="stopping"
+              :aria-label="stopping ? '正在停止' : '停止生成'"
+              :title="stopping ? '正在停止' : '停止生成'"
               @click="stopGeneration"
             >
-              ■
+              {{ stopping ? '…' : '■' }}
             </button>
             <button
               v-else

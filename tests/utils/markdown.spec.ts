@@ -1,4 +1,15 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+
+const { mermaidRenderMock } = vi.hoisted(() => ({
+  mermaidRenderMock: vi.fn(),
+}))
+vi.mock('mermaid', () => ({
+  default: {
+    initialize: vi.fn(),
+    render: mermaidRenderMock,
+  },
+}))
+
 import { renderMarkdown } from '../../src/utils/markdown'
 
 describe('renderMarkdown', () => {
@@ -28,5 +39,20 @@ describe('renderMarkdown', () => {
     expect(highlighted).toContain('const')
     expect(fallback).toContain('<pre>')
     expect(fallback).toContain('hello')
+  })
+
+  it('渲染 Mermaid 图表，语法错误时保留代码块', async () => {
+    mermaidRenderMock.mockImplementation(async (_id: string, code: string) => {
+      if (code.includes('not valid')) throw new Error('invalid mermaid')
+      return { svg: '<svg data-testid="mermaid-diagram"></svg>' }
+    })
+    const diagram = await renderMarkdown(
+      '```mermaid\ngraph TD\n  A[开始] --> B[结束]\n```',
+    )
+    const invalid = await renderMarkdown('```mermaid\nnot valid mermaid\n```')
+
+    expect(diagram).toContain('<svg')
+    expect(invalid).toContain('<pre>')
+    expect(invalid).toContain('not valid mermaid')
   })
 })

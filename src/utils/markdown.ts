@@ -19,6 +19,32 @@ const supportedLanguages = new Set([
   'typescript',
 ])
 
+interface MermaidApi {
+  initialize(config: {
+    startOnLoad: boolean
+    securityLevel: 'strict'
+    theme: 'dark'
+  }): void
+  render(id: string, code: string): Promise<{ svg: string }>
+}
+
+let mermaidPromise: Promise<MermaidApi> | undefined
+
+function loadMermaid(): Promise<MermaidApi> {
+  // Mermaid 只在实际出现 mermaid 代码块时加载，普通 Markdown 不增加首屏成本。
+  mermaidPromise ??= import('mermaid').then(({ default: mermaid }) => {
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: 'dark',
+    })
+    return mermaid
+  })
+  return mermaidPromise
+}
+
+let mermaidRenderId = 0
+
 interface Highlighter {
   codeToHtml(code: string, options: { lang: string; theme: string }): string
 }
@@ -81,12 +107,22 @@ function getLanguage(node: HastNode): string | undefined {
   return languageAliases[language] ?? language
 }
 
+/**
+ * 获取Hast节点的文本内容
+ * @param node Hast节点对象，包含type和children属性
+ * @returns 返回节点中所有文本内容的拼接结果
+ */
 function getCodeText(node: HastNode): string {
-  return (node.children ?? [])
-    .map((child) => (child.type === 'text' ? child.value ?? '' : getCodeText(child)))
-    .join('')
+  return (node.children ?? [])  // 如果节点没有children属性，则使用空数组
+    .map((child) => (child.type === 'text' ? child.value ?? '' : getCodeText(child)))  // 遍历子节点，如果是文本节点则返回其值，否则递归处理
+    .join('')  // 将所有文本内容拼接成字符串
 }
 
+/**
+ * @description: 通过shiki将代码块高亮
+ * @param {HastNode} node
+ * @return {*}
+ */
 async function highlightCodeBlocks(node: HastNode): Promise<void> {
   if (!node.children) return
 
@@ -97,6 +133,20 @@ async function highlightCodeBlocks(node: HastNode): Promise<void> {
         (item) => item.type === 'element' && item.tagName === 'code',
       )
       const language = code ? getLanguage(code) : undefined
+
+      if (code && language === 'mermaid') {
+        try {
+          const { svg } = await (await loadMermaid()).render(
+            `mermaid-${mermaidRenderId++}`,
+            getCodeText(code),
+          )
+          // Mermaid 只生成 SVG，不把原始图表文本直接当 HTML 插入页面。
+          node.children[index] = { type: 'raw', value: svg }
+          continue
+        } catch {
+          // 流式内容未闭合或语法错误时，保留普通代码块作为安全降级。
+        }
+      }
 
       if (code && language && supportedLanguages.has(language)) {
         try {
@@ -133,8 +183,13 @@ export async function renderMarkdown(markdown: string): Promise<string> {
    * 这一步必须在「已转成 hast、还没变成字符串」的中间态做，最后才由 processor.stringify() 输出。
    */
   // 将处理后的语法树转换为 HTML 字符串
-  const html = processor.stringify(tree as any)
+  const html = processor.stringify(
+    // 对 unified 的 stringify 来说，第一个参数就是 compiler（rehype-stringify）期望的输入树类型，也就是 hast 的 Root。
+    tree as Parameters<typeof processor.stringify>[0],
+  )
 
   // 即使 remark 默认不会执行原始 HTML，也在进入 v-html 前做最后一道清洗。
-  return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } })
+  return DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true, svg: true, svgFilters: true },
+  })
 }
